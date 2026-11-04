@@ -1,0 +1,37 @@
+name: Windows 배포
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: 빌드 및 메타데이터 검사
+        shell: pwsh
+        run: |
+          ./release.ps1
+          ./verify/build.ps1
+          $check = Start-Process ./verify/SmokeTest.exe -ArgumentList '--metadata-only' -WindowStyle Hidden -Wait -PassThru
+          Get-Content ./verify/metadata-verification.log
+          if ($check.ExitCode -ne 0) { throw '메타데이터 검사 실패' }
+          ./verify/update-tests.ps1
+      - name: 태그와 버전 일치 검사
+        shell: pwsh
+        run: |
+          $version = [Diagnostics.FileVersionInfo]::GetVersionInfo((Resolve-Path ./dist/AgentScreenGuard.exe)).ProductVersion
+          if ($env:GITHUB_REF_NAME -ne "v$version") { throw '태그와 프로그램 버전이 다릅니다.' }
+      - name: GitHub Release 업로드
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME ./dist/AgentScreenGuard.exe ./dist/AgentScreenGuard.exe.sha256 ./dist/*.zip --verify-tag --draft --title $env:GITHUB_REF_NAME --generate-notes
+          if ($LASTEXITCODE -ne 0) { throw '릴리스 업로드 실패' }
+          gh release edit $env:GITHUB_REF_NAME --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw '릴리스 공개 실패' }

@@ -1,0 +1,13 @@
+/AgentScreenGuard*.exe
+/dist/
+/verify/*.exe
+/verify/*.log
+/verify/preview-*.png
+/verify/test-data/
+/verify/update-sandbox/
+*.tmp
+*.update-*
+*.rollback-*
+pin.dat
+background.img
+복구코드*.txt
