@@ -79,7 +79,7 @@ namespace AgentScreenGuard
             return Rectangle.Round(new RectangleF(field.X, field.Bottom + 12 * scale, field.Width, 36 * scale));
         }
 
-        internal void Draw(Graphics graphics, Size size, CurtainView view, string dots, string status)
+        internal void Draw(Graphics graphics, Size size, CurtainView view, string dots, string status, bool inputReady = true, bool caretVisible = true)
         {
             var state = graphics.Save();
             graphics.SmoothingMode = SmoothingMode.AntiAlias;
@@ -125,9 +125,25 @@ namespace AgentScreenGuard
                 var field = new RectangleF(cx - 180, height / 2 + 8, 360, 46);
                 using (var fill = new SolidBrush(Color.FromArgb(245, 247, 248))) graphics.FillRectangle(fill, field);
                 using (var line = new Pen(Color.FromArgb(180, Color.White))) graphics.DrawRectangle(line, field.X, field.Y, field.Width, field.Height);
-                using (var line = new Pen(Color.FromArgb(90, 183, 255), 2)) graphics.DrawLine(line, field.X, field.Bottom, field.Right, field.Bottom);
+                using (var line = new Pen(inputReady ? Color.FromArgb(90, 183, 255) : Color.Gray, 2)) graphics.DrawLine(line, field.X, field.Bottom, field.Right, field.Bottom);
                 string placeholder = view == CurtainView.Recovery ? "복구 코드" : "PIN";
-                Text(graphics, dots.Length == 0 ? placeholder : dots, "Segoe UI", dots.Length == 0 ? 18 : 15, new RectangleF(field.X + 15, field.Y, field.Width - 65, field.Height), Color.FromArgb(70, 70, 70), false);
+                var textBounds = new RectangleF(field.X + 15, field.Y, field.Width - 65, field.Height);
+                using (var font = new Font("Segoe UI", dots.Length == 0 ? 18 : 15, FontStyle.Regular, GraphicsUnit.Pixel))
+                using (var brush = new SolidBrush(Color.FromArgb(70, 70, 70)))
+                using (var format = new StringFormat(StringFormat.GenericTypographic) { LineAlignment = StringAlignment.Center, FormatFlags = StringFormatFlags.NoWrap })
+                {
+                    var inputState = graphics.Save();
+                    graphics.SetClip(textBounds, CombineMode.Intersect);
+                    graphics.DrawString(dots.Length == 0 ? placeholder : dots, font, brush, textBounds, format);
+                    if (inputReady && caretVisible)
+                    {
+                        float advance = dots.Length == 0 ? 0 : graphics.MeasureString(dots, font, Int32.MaxValue, format).Width;
+                        float caretX = Math.Min(textBounds.Right - 2, textBounds.X + advance + 1);
+                        using (var caret = new Pen(Color.FromArgb(45, 45, 45), 1.5f))
+                            graphics.DrawLine(caret, caretX, field.Y + 11, caretX, field.Bottom - 11);
+                    }
+                    graphics.Restore(inputState);
+                }
                 Text(graphics, "→", "Segoe UI", 27, new RectangleF(field.Right - 45, field.Y - 2, 45, field.Height), Color.FromArgb(65, 65, 65));
                 Text(graphics, view == CurtainView.Recovery ? "PIN으로 돌아가기" : "PIN을 잊으셨나요?", "맑은 고딕", 15, new RectangleF(field.X, field.Bottom + 12, field.Width, 36), Color.White);
                 Text(graphics, status, "맑은 고딕", 14, new RectangleF(cx - 400, field.Bottom + 62, 800, 60), Color.FromArgb(245, Color.White));
@@ -153,6 +169,7 @@ namespace AgentScreenGuard
     sealed class Curtain : Form
     {
         internal string Status = "", Dots = "", Minute = "";
+        internal bool InputReady, CaretVisible;
         internal CurtainView View;
         internal readonly bool ShowsInterface;
         readonly LockVisual visual;
@@ -190,7 +207,7 @@ namespace AgentScreenGuard
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
-            if (ShowsInterface) visual.Draw(e.Graphics, ClientSize, View, Dots, Status);
+            if (ShowsInterface) visual.Draw(e.Graphics, ClientSize, View, Dots, Status, InputReady, CaretVisible);
             else e.Graphics.Clear(Color.Black);
         }
         protected override void Dispose(bool disposing) { if (disposing && visual != null) visual.Dispose(); base.Dispose(disposing); }

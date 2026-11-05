@@ -107,6 +107,8 @@ namespace AgentScreenGuard
                 var tray = (NotifyIcon)typeof(GuardContext).GetField("tray", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(app);
                 Record("트레이 메뉴 네 항목과 버전 텍스트", tray.ContextMenuStrip.Items.Count == 4 && !tray.ContextMenuStrip.Items[0].Enabled && tray.ContextMenuStrip.Items[0].Text == "버전 " + AppInfo.Version && ((ToolStripMenuItem)tray.ContextMenuStrip.Items[1]).CheckOnClick);
                 var started = DateTime.UtcNow;
+                var blinkStarted = DateTime.MinValue;
+                bool caretOnSeen = false, caretOffSeen = false;
                 int stage = 0;
                 timer.Tick += delegate
                 {
@@ -130,6 +132,7 @@ namespace AgentScreenGuard
                     {
                         var covers = Application.OpenForms.Cast<Form>().OfType<Curtain>().ToArray();
                         Record("오류 PIN 잠금 유지", app.IsCovered && covers.Any(c => c.Status.Contains("PIN이 다릅니다")));
+                        Record("재시도 대기 중 입력 표시 비활성", covers.Where(c => c.ShowsInterface).All(c => !c.InputReady && !c.CaretVisible));
                         var input = typeof(GuardContext).GetField("filter", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(app);
                         PhysicalKeys(input, "", new[] { 112 });
                         stage = 5;
@@ -141,20 +144,32 @@ namespace AgentScreenGuard
                         PhysicalKeys(input, "", new[] { 112 });
                         stage = 3;
                     }
-                    else if (stage == 3 && elapsed > 4)
+                    else if (stage == 3 && Application.OpenForms.Cast<Form>().OfType<Curtain>().Any(c => c.ShowsInterface && c.InputReady))
                     {
+                        Record("재시도 대기 후 입력 표시 복원", Application.OpenForms.Cast<Form>().OfType<Curtain>().Where(c => c.ShowsInterface).All(c => c.InputReady));
+                        blinkStarted = DateTime.UtcNow;
+                        stage = 6;
+                    }
+                    else if (stage == 6)
+                    {
+                        var primary = Application.OpenForms.Cast<Form>().OfType<Curtain>().Single(c => c.ShowsInterface);
+                        caretOnSeen |= primary.CaretVisible;
+                        caretOffSeen |= !primary.CaretVisible;
+                        if ((DateTime.UtcNow - blinkStarted).TotalSeconds < 1.2) return;
+                        Record("입력 가능한 동안 커서 깜빡임", caretOnSeen && caretOffSeen && primary.InputReady);
                         var input = typeof(GuardContext).GetField("filter", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(app);
                         Record("4자리 PIN 키 전달", PhysicalKeys(input, "9437"));
+                        blinkStarted = DateTime.UtcNow;
                         stage = 4;
                     }
-                    else if (stage == 4 && elapsed > 6)
+                    else if (stage == 4 && (DateTime.UtcNow - blinkStarted).TotalSeconds > 2)
                     {
                         Record("정상 PIN 가림 해제", !app.IsCovered);
                         Record("운영 PIN 파일 보존", pinBefore == null ? !File.Exists(PinStore.FilePath) : File.Exists(PinStore.FilePath) && pinBefore.SequenceEqual(File.ReadAllBytes(PinStore.FilePath)));
                         timer.Stop();
                         app.ExitThread();
                     }
-                    if (elapsed > 10) { app.Uncover(); timer.Stop(); app.ExitThread(); }
+                    if (elapsed > 15) { app.Uncover(); timer.Stop(); app.ExitThread(); Record("입력 검증 시간 내 완료", false); }
                 };
                 timer.Start();
                 Application.Run(app);
@@ -303,6 +318,16 @@ namespace AgentScreenGuard
                         using (var graphics = Graphics.FromImage(image)) visual.Draw(graphics, image.Size, view, view == CurtainView.Clock ? "" : "●●●●", view == CurtainView.Recovery ? "보관한 복구 코드 20자리를 입력하세요." : "");
                         image.Save(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "preview-" + view + ".png"), System.Drawing.Imaging.ImageFormat.Png);
                     }
+                foreach (string sample in new[] { "Empty", "Full", "RecoveryFull", "BlinkOff", "Waiting" })
+                    using (var image = new Bitmap(1600, 900))
+                    {
+                        bool ready = sample != "Waiting";
+                        string dots = sample == "Empty" ? "" : new string('●', sample == "RecoveryFull" ? 20 : sample == "Full" ? 12 : 4);
+                        using (var graphics = Graphics.FromImage(image))
+                            visual.Draw(graphics, image.Size, sample == "RecoveryFull" ? CurtainView.Recovery : CurtainView.Pin, dots,
+                                ready ? "PIN 입력 후 Enter를 누르세요." : "PIN이 다릅니다. 2초 후 다시 입력하세요.", ready, sample != "BlinkOff");
+                        image.Save(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "preview-" + sample + ".png"), System.Drawing.Imaging.ImageFormat.Png);
+                    }
             }
             using (var curtain = new Curtain(new Rectangle(0, 0, 1600, 900), false))
             using (var image = new Bitmap(1600, 900))
@@ -331,7 +356,7 @@ namespace AgentScreenGuard
         static void CheckMetadata()
         {
             File.WriteAllText(Log, "");
-            Record("버전 비교 정규화", Updates.ParseVersion("v1.0.0") == AppInfo.CurrentVersion && Updates.ParseVersion("1.0.1") > AppInfo.CurrentVersion);
+            Record("버전 비교 정규화", Updates.ParseVersion("v" + AppInfo.Version) == AppInfo.CurrentVersion && Updates.ParseVersion("1.0.1") > Updates.ParseVersion("1.0.0"));
             Record("시험 배포 버전 거부", Rejected(() => Updates.ParseRelease("{\"tag_name\":\"v1.1.0\",\"prerelease\":true,\"assets\":[]}")) && Rejected(() => Updates.ParseVersion("v1.0.0-beta")));
             string executable = System.Reflection.Assembly.GetExecutingAssembly().Location;
             Updates.VerifyPayload(executable, Updates.Hash(executable), AppInfo.Version);

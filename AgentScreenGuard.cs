@@ -345,6 +345,7 @@ namespace AgentScreenGuard
         InputFilter filter;
         bool waiting, verifying, disposed, settingsOpen, updating;
         DateTime waitUntil, retryAfter;
+        DateTime caretResetUtc = DateTime.UtcNow;
         int failures;
         CurtainView view;
         string failureMessage = "";
@@ -557,6 +558,7 @@ namespace AgentScreenGuard
         {
             view = next;
             digits.Clear();
+            caretResetUtc = DateTime.UtcNow;
             RefreshStatus();
         }
 
@@ -619,25 +621,31 @@ namespace AgentScreenGuard
                 failureMessage = recovering ? "복구 코드가 다릅니다." : "PIN이 다릅니다.";
                 retryAfter = DateTime.UtcNow.AddSeconds(Math.Min(30, Math.Pow(2, Math.Min(failures, 5))));
             }
+            caretResetUtc = DateTime.UtcNow;
             RefreshStatus();
         }
 
         void RefreshStatus()
         {
-            string status = verifying ? "확인 중..." : DateTime.UtcNow < retryAfter
-                ? failureMessage + " " + Math.Ceiling((retryAfter - DateTime.UtcNow).TotalSeconds) + "초 후 다시 입력하세요."
+            var now = DateTime.UtcNow;
+            bool inputReady = view != CurtainView.Clock && !verifying && now >= retryAfter;
+            bool caretVisible = inputReady && (now - caretResetUtc).TotalMilliseconds % 1000 < 500;
+            string status = verifying ? "확인 중..." : now < retryAfter
+                ? failureMessage + " " + Math.Ceiling((retryAfter - now).TotalSeconds) + "초 후 다시 입력하세요."
                 : view == CurtainView.Recovery ? pin.HasRecovery ? "보관한 복구 코드 20자리를 입력하세요." : "복구 코드가 없습니다. Ctrl+Alt+Del → 작업 관리자에서 앱을 종료하세요."
-                : "";
+                : view == CurtainView.Pin ? "PIN 입력 후 Enter를 누르세요." : "";
             string dots = new string('●', digits.Length);
             foreach (var curtain in curtains)
             {
                 if (!curtain.ShowsInterface) continue;
                 string minute = DateTime.Now.ToString("yyyyMMddHHmm");
-                if (curtain.Status == status && curtain.Dots == dots && curtain.View == view && curtain.Minute == minute) continue;
+                if (curtain.Status == status && curtain.Dots == dots && curtain.View == view && curtain.Minute == minute && curtain.InputReady == inputReady && curtain.CaretVisible == caretVisible) continue;
                 curtain.Status = status;
                 curtain.Dots = dots;
                 curtain.View = view;
                 curtain.Minute = minute;
+                curtain.InputReady = inputReady;
+                curtain.CaretVisible = caretVisible;
                 curtain.Invalidate();
             }
         }
