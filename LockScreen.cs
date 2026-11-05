@@ -213,7 +213,7 @@ namespace AgentScreenGuard
         protected override void Dispose(bool disposing) { if (disposing && visual != null) visual.Dispose(); base.Dispose(disposing); }
     }
 
-    sealed class BackgroundDialog : Form
+    sealed class BackgroundDialog : TrayDialog
     {
         LockVisual preview;
         string selected;

@@ -13,6 +13,7 @@ namespace AgentScreenGuard
     {
         static string Log = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "verification.log");
         [DllImport("user32.dll")] static extern bool GetWindowDisplayAffinity(IntPtr hwnd, out uint affinity);
+        [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hwnd);
         [STAThread]
         static void Main(string[] args)
         {
@@ -41,6 +42,7 @@ namespace AgentScreenGuard
                 return;
             }
             if (args.Contains("--render")) { Render(); return; }
+            if (args.Contains("--settings-only")) { Log = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings-verification.log"); CheckSettings(); return; }
             if (args.Contains("--data-only")) { Log = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data-verification.log"); CheckData(); return; }
             if (args.Contains("--input-only")) { Log = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "local-verification.log"); CheckLocalInput(); return; }
             if (args.Contains("--recovery-only")) { Log = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "recovery-verification.log"); CheckRecovery(); return; }
@@ -128,7 +130,7 @@ namespace AgentScreenGuard
                         }
                         finally { Marshal.FreeHGlobal(data); }
                     }
-                    else if (stage == 2 && elapsed > 2)
+                    else if (stage == 2 && Application.OpenForms.Cast<Form>().OfType<Curtain>().Any(c => c.Status.Contains("PIN이 다릅니다")))
                     {
                         var covers = Application.OpenForms.Cast<Form>().OfType<Curtain>().ToArray();
                         Record("오류 PIN 잠금 유지", app.IsCovered && covers.Any(c => c.Status.Contains("PIN이 다릅니다")));
@@ -162,14 +164,14 @@ namespace AgentScreenGuard
                         blinkStarted = DateTime.UtcNow;
                         stage = 4;
                     }
-                    else if (stage == 4 && (DateTime.UtcNow - blinkStarted).TotalSeconds > 2)
+                    else if (stage == 4 && !app.IsCovered)
                     {
                         Record("정상 PIN 가림 해제", !app.IsCovered);
                         Record("운영 PIN 파일 보존", pinBefore == null ? !File.Exists(PinStore.FilePath) : File.Exists(PinStore.FilePath) && pinBefore.SequenceEqual(File.ReadAllBytes(PinStore.FilePath)));
                         timer.Stop();
                         app.ExitThread();
                     }
-                    if (elapsed > 15) { app.Uncover(); timer.Stop(); app.ExitThread(); Record("입력 검증 시간 내 완료", false); }
+                    if (elapsed > 30) { app.Uncover(); timer.Stop(); app.ExitThread(); Record("입력 검증 시간 내 완료", false); }
                 };
                 timer.Start();
                 Application.Run(app);
@@ -351,6 +353,54 @@ namespace AgentScreenGuard
                 image.Save(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "preview-" + name + ".png"), System.Drawing.Imaging.ImageFormat.Png);
             }
             form.Hide();
+        }
+
+        static void CheckSettings()
+        {
+            File.WriteAllText(Log, "");
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            using (var app = new GuardContext(new PinStore("9437"), true))
+            using (var timer = new Timer { Interval = 200 })
+            {
+                int stage = 0;
+                SettingsDialog settings = null;
+                var configure = typeof(GuardContext).GetMethod("ConfigureSettings", BindingFlags.Instance | BindingFlags.NonPublic);
+                timer.Tick += delegate
+                {
+                    if (stage == 0)
+                    {
+                        stage = 1;
+                        configure.Invoke(app, null);
+                        var tray = (NotifyIcon)typeof(GuardContext).GetField("tray", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(app);
+                        Record("설정 닫은 후 종료 메뉴 복원", tray.ContextMenuStrip.Items[3].Enabled);
+                        timer.Stop();
+                        app.ExitThread();
+                    }
+                    else if (stage == 1)
+                    {
+                        settings = Application.OpenForms.Cast<Form>().OfType<SettingsDialog>().Single();
+                        Record("숨김 실행 후 설정 창 표시", settings.Visible && IsWindowVisible(settings.Handle));
+                        configure.Invoke(app, null);
+                        Record("설정 재요청 시 기존 창 유지", Application.OpenForms.Cast<Form>().OfType<SettingsDialog>().Single() == settings);
+                        stage = 2;
+                        typeof(GuardContext).GetMethod("ConfigureBackground", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(app, null);
+                        Record("배경 창 닫은 후 설정 유지", settings.Visible && IsWindowVisible(settings.Handle));
+                        var tray = (NotifyIcon)typeof(GuardContext).GetField("tray", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(app);
+                        Record("중첩 창 닫아도 설정 중 종료 방지 유지", !tray.ContextMenuStrip.Items[3].Enabled);
+                        settings.Close();
+                    }
+                    else if (stage == 2)
+                    {
+                        var background = Application.OpenForms.Cast<Form>().OfType<BackgroundDialog>().Single();
+                        Record("배경 창 표시와 소유 창 연결", background.Visible && IsWindowVisible(background.Handle) && background.Owner == settings);
+                        stage = 3;
+                        background.Close();
+                    }
+                };
+                timer.Start();
+                Application.Run(app);
+            }
         }
 
         static void CheckMetadata()

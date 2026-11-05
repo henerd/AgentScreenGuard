@@ -30,7 +30,18 @@ namespace AgentScreenGuard
         }
     }
 
-    sealed class SettingsDialog : Form
+    class TrayDialog : Form
+    {
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            // A hidden tray-app launch must not hide its first interactive dialog.
+            Native.ShowWindow(Handle, 5);
+            Activate();
+        }
+    }
+
+    sealed class SettingsDialog : TrayDialog
     {
         internal SettingsDialog(Action changePin, Action recovery, Action background)
         {

@@ -160,7 +160,7 @@ namespace AgentScreenGuard
         }
     }
 
-    sealed class PinDialog : Form
+    sealed class PinDialog : TrayDialog
     {
         internal PinStore Result;
         internal string RecoveryCode;
@@ -343,6 +343,7 @@ namespace AgentScreenGuard
         readonly StartupRegistration startup = new StartupRegistration(Application.ExecutablePath);
         PinStore pin;
         InputFilter filter;
+        Form activeDialog;
         bool waiting, verifying, disposed, settingsOpen, updating;
         DateTime waitUntil, retryAfter;
         DateTime caretResetUtc = DateTime.UtcNow;
@@ -394,11 +395,11 @@ namespace AgentScreenGuard
             try
             {
                 using (var dialog = new PinDialog(pin, recovered))
-                    if (dialog.ShowDialog() == DialogResult.OK)
+                    if (ShowDialog(dialog) == DialogResult.OK)
                     {
                         pin = dialog.Result;
                         if (dialog.RecoveryCode != null)
-                            using (var recovery = new RecoveryDialog(dialog.RecoveryCode)) recovery.ShowDialog();
+                            using (var recovery = new RecoveryDialog(dialog.RecoveryCode)) ShowDialog(recovery);
                     }
             }
             finally { SetMenuEnabled(true); }
@@ -412,18 +413,33 @@ namespace AgentScreenGuard
             try
             {
                 using (var dialog = new RecoveryDialog(pin))
-                    if (dialog.ShowDialog() == DialogResult.OK && dialog.Result != null) pin = dialog.Result;
+                    if (ShowDialog(dialog) == DialogResult.OK && dialog.Result != null) pin = dialog.Result;
             }
             finally { SetMenuEnabled(true); }
         }
 
         void SetMenuEnabled(bool enabled)
         {
+            enabled = enabled && activeDialog == null && !settingsOpen && !updating && !IsCovered;
             startupItem.Enabled = updateItem.Enabled = exitItem.Enabled = enabled;
+        }
+
+        DialogResult ShowDialog(Form dialog)
+        {
+            var previous = activeDialog;
+            activeDialog = dialog;
+            try { return previous == null ? dialog.ShowDialog() : dialog.ShowDialog(previous); }
+            finally { activeDialog = previous; }
         }
 
         void ConfigureSettings()
         {
+            if (activeDialog != null)
+            {
+                Native.ShowWindow(activeDialog.Handle, 9);
+                activeDialog.Activate();
+                return;
+            }
             if (IsCovered || settingsOpen || updating || !exitItem.Enabled) return;
             bool cover = false;
             settingsOpen = true;
@@ -431,7 +447,7 @@ namespace AgentScreenGuard
             try
             {
                 using (var dialog = new SettingsDialog(() => ConfigurePin(), ConfigureRecovery, ConfigureBackground))
-                    cover = dialog.ShowDialog() == DialogResult.OK;
+                    cover = ShowDialog(dialog) == DialogResult.OK;
             }
             finally { settingsOpen = false; SetMenuEnabled(true); }
             if (cover) RequestCover();
@@ -468,7 +484,7 @@ namespace AgentScreenGuard
         {
             if (IsCovered) return;
             SetMenuEnabled(false);
-            try { using (var dialog = new BackgroundDialog()) dialog.ShowDialog(); }
+            try { using (var dialog = new BackgroundDialog()) ShowDialog(dialog); }
             finally { SetMenuEnabled(true); }
         }
 
@@ -682,6 +698,7 @@ namespace AgentScreenGuard
         [StructLayout(LayoutKind.Sequential)]
         internal struct Message { internal IntPtr hwnd; internal uint message; internal UIntPtr wParam; internal IntPtr lParam; internal uint time; internal Point point; internal uint privateData; }
         [DllImport("user32.dll")] internal static extern bool SetProcessDPIAware();
+        [DllImport("user32.dll")] internal static extern bool ShowWindow(IntPtr hwnd, int command);
         [DllImport("user32.dll", SetLastError = true)] internal static extern bool SetWindowDisplayAffinity(IntPtr hwnd, uint affinity);
         [DllImport("user32.dll", SetLastError = true)] internal static extern bool SetLayeredWindowAttributes(IntPtr hwnd, uint key, byte alpha, uint flags);
         [DllImport("user32.dll", SetLastError = true)] internal static extern IntPtr SetWindowsHookEx(int type, HookProc proc, IntPtr module, uint thread);

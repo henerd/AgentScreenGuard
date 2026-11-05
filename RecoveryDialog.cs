@@ -55,7 +55,7 @@ namespace AgentScreenGuard
         }
     }
 
-    sealed class RecoveryDialog : Form
+    sealed class RecoveryDialog : TrayDialog
     {
         internal PinStore Result;
         readonly Label notice, message;
