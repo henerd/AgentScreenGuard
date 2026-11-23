@@ -115,7 +115,15 @@ namespace AgentScreenGuard
                 timer.Tick += delegate
                 {
                     double elapsed = (DateTime.UtcNow - started).TotalSeconds;
-                    if (stage == 0) { app.RequestCover(); stage = 1; }
+                    if (stage == 0)
+                    {
+                        app.RequestCover();
+                        Record("키 상태 대기 없이 즉시 잠금", app.IsCovered);
+                        var covers = Application.OpenForms.Cast<Form>().OfType<Curtain>().ToArray();
+                        app.RequestCover();
+                        Record("잠금 중 재요청 시 가림창 유지", covers.SequenceEqual(Application.OpenForms.Cast<Form>().OfType<Curtain>()));
+                        stage = 1;
+                    }
                     else if (stage == 1 && app.IsCovered)
                     {
                         var input = typeof(GuardContext).GetField("filter", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(app);
@@ -372,6 +380,8 @@ namespace AgentScreenGuard
                     {
                         stage = 1;
                         configure.Invoke(app, null);
+                        Record("설정의 지금 잠그기로 즉시 잠금", app.IsCovered);
+                        app.Uncover();
                         var tray = (NotifyIcon)typeof(GuardContext).GetField("tray", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(app);
                         Record("설정 닫은 후 종료 메뉴 복원", tray.ContextMenuStrip.Items[3].Enabled);
                         timer.Stop();
@@ -388,7 +398,7 @@ namespace AgentScreenGuard
                         Record("배경 창 닫은 후 설정 유지", settings.Visible && IsWindowVisible(settings.Handle));
                         var tray = (NotifyIcon)typeof(GuardContext).GetField("tray", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(app);
                         Record("중첩 창 닫아도 설정 중 종료 방지 유지", !tray.ContextMenuStrip.Items[3].Enabled);
-                        settings.Close();
+                        settings.Controls.OfType<Button>().Single(button => button.Text == "지금 잠그기").PerformClick();
                     }
                     else if (stage == 2)
                     {

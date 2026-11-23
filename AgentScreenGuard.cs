@@ -344,8 +344,8 @@ namespace AgentScreenGuard
         PinStore pin;
         InputFilter filter;
         Form activeDialog;
-        bool waiting, verifying, disposed, settingsOpen, updating;
-        DateTime waitUntil, retryAfter;
+        bool verifying, disposed, settingsOpen, updating;
+        DateTime retryAfter;
         DateTime caretResetUtc = DateTime.UtcNow;
         int failures;
         CurtainView view;
@@ -490,34 +490,18 @@ namespace AgentScreenGuard
 
         internal void RequestCover()
         {
-            if (IsCovered || waiting || settingsOpen || updating || !exitItem.Enabled) return;
+            if (IsCovered || settingsOpen || updating || !exitItem.Enabled) return;
             if (pin == null) { ConfigurePin(); if (pin == null) return; }
-            waiting = true;
-            waitUntil = DateTime.UtcNow.AddSeconds(3);
+            try { Cover(); }
+            catch (Exception error)
+            {
+                Uncover();
+                MessageBox.Show(error.Message, "화면 가리기 실패", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
         void Tick(object sender, EventArgs e)
         {
-            if (waiting)
-            {
-                bool held = false;
-                for (int key = 1; key < 255; key++) held |= (Native.GetAsyncKeyState(key) & 0x8000) != 0;
-                if (!held)
-                {
-                    waiting = false;
-                    try { Cover(); }
-                    catch (Exception error)
-                    {
-                        Uncover();
-                        MessageBox.Show(error.Message, "화면 가리기 실패", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    }
-                }
-                else if (DateTime.UtcNow > waitUntil)
-                {
-                    waiting = false;
-                    tray.ShowBalloonTip(3500, "화면 가리기 취소됨", "키와 마우스 버튼을 놓은 뒤 다시 시도하세요.", ToolTipIcon.Warning);
-                }
-            }
             if (!IsCovered) return;
             foreach (var curtain in curtains) Native.SetWindowPos(curtain.Handle, new IntPtr(-1), 0, 0, 0, 0, 0x0013);
             RefreshStatus();
@@ -715,7 +699,6 @@ namespace AgentScreenGuard
         [DllImport("user32.dll")] internal static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int width, int height, uint flags);
         [DllImport("user32.dll")] internal static extern bool RegisterHotKey(IntPtr hwnd, int id, uint modifiers, uint key);
         [DllImport("user32.dll")] internal static extern bool UnregisterHotKey(IntPtr hwnd, int id);
-        [DllImport("user32.dll")] internal static extern short GetAsyncKeyState(int key);
         [DllImport("user32.dll")] internal static extern bool LockWorkStation();
         [DllImport("kernel32.dll")] internal static extern uint SetThreadExecutionState(uint flags);
     }
