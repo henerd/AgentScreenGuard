@@ -14,6 +14,9 @@ namespace AgentScreenGuard
         static string Log = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "verification.log");
         [DllImport("user32.dll")] static extern bool GetWindowDisplayAffinity(IntPtr hwnd, out uint affinity);
         [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hwnd);
+        [DllImport("user32.dll")] static extern short GetAsyncKeyState(int key);
+        [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extraInfo);
         [STAThread]
         static void Main(string[] args)
         {
@@ -45,6 +48,7 @@ namespace AgentScreenGuard
             if (args.Contains("--settings-only")) { Log = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings-verification.log"); CheckSettings(); return; }
             if (args.Contains("--data-only")) { Log = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data-verification.log"); CheckData(); return; }
             if (args.Contains("--input-only")) { Log = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "local-verification.log"); CheckLocalInput(); return; }
+            if (args.Contains("--release-only")) { Log = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "release-verification.log"); CheckInputRelease(); return; }
             if (args.Contains("--recovery-only")) { Log = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "recovery-verification.log"); CheckRecovery(); return; }
             if (args.Contains("--export-ui")) { Log = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "export-verification.log"); CheckExportUi(); return; }
             File.WriteAllText(Log, "");
@@ -183,6 +187,107 @@ namespace AgentScreenGuard
                 };
                 timer.Start();
                 Application.Run(app);
+            }
+        }
+
+        static void CheckInputRelease()
+        {
+            File.WriteAllText(Log, "");
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            byte[] heldKeys = { 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x87 };
+            var marker = new UIntPtr(0x53475244);
+            using (var fixture = new TrayDialog { Text = "Screen Guard · 키 해제 검증", ClientSize = new Size(460, 140) })
+            using (var app = new GuardContext(new PinStore("9437"), true))
+            using (var timer = new Timer { Interval = 200 })
+            {
+                fixture.Controls.Add(new Label { Text = "Ctrl · Alt · Shift 해제 후 Windows 키 상태를 검사합니다.", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter });
+                IntPtr bridgeHandle = IntPtr.Zero;
+                object filter = null;
+                var keyboardCallback = typeof(InputFilter).GetMethod("Keyboard", BindingFlags.Instance | BindingFlags.NonPublic);
+                // Only marked test events exercise the physical-input hook path.
+                // Production still permits injected input for ongoing AI work.
+                Native.HookProc bridge = delegate(int code, IntPtr message, IntPtr data)
+                {
+                    if (code < 0 || Marshal.ReadIntPtr(data, 16) != new IntPtr((long)marker.ToUInt64()))
+                        return (IntPtr)keyboardCallback.Invoke(filter, new object[] { code, message, data });
+                    int flags = Marshal.ReadInt32(data, 8);
+                    Marshal.WriteInt32(data, 8, flags & ~0x12);
+                    try { return (IntPtr)keyboardCallback.Invoke(filter, new object[] { code, message, data }); }
+                    finally { Marshal.WriteInt32(data, 8, flags); }
+                };
+                int stage = 0;
+                var started = DateTime.UtcNow;
+                timer.Tick += delegate
+                {
+                    if ((DateTime.UtcNow - started).TotalSeconds > 60) throw new Exception("키 해제 검사 시간 초과");
+                    if (stage == 0)
+                    {
+                        if (GetForegroundWindow() != fixture.Handle) return;
+                        Record("검증 창 입력 포커스", GetForegroundWindow() == fixture.Handle);
+                        foreach (byte key in heldKeys) keybd_event(key, 0, key == 0xA3 || key == 0xA5 ? 1u : 0u, marker);
+                        stage = 1;
+                    }
+                    else if (stage == 1)
+                    {
+                        Record("좌우 Alt Ctrl Shift 및 일반 키 눌림 재현", heldKeys.All(key => GetAsyncKeyState(key) < 0));
+                        app.RequestCover();
+                        Record("키를 누른 채 즉시 잠금", app.IsCovered);
+                        filter = typeof(GuardContext).GetField("filter", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(app);
+                        var keyboardHandle = typeof(InputFilter).GetField("keyboard", BindingFlags.Instance | BindingFlags.NonPublic);
+                        Record("실제 훅 콜백을 검증 스레드에 연결", Native.UnhookWindowsHookEx((IntPtr)keyboardHandle.GetValue(filter)));
+                        keyboardHandle.SetValue(filter, IntPtr.Zero);
+                        bridgeHandle = Native.SetWindowsHookEx(13, bridge, Native.GetModuleHandle(null), 0);
+                        Record("검증 입력 경로 준비", bridgeHandle != IntPtr.Zero);
+                        foreach (byte key in heldKeys.Reverse()) keybd_event(key, 0, (key == 0xA3 || key == 0xA5 ? 1u : 0u) | 2u, marker);
+                        stage = 2;
+                    }
+                    else if (stage == 2)
+                    {
+                        Record("잠금 중 기존 키 해제로 Windows 눌림 상태 해제", heldKeys.All(key => GetAsyncKeyState(key) >= 0));
+                        Record("기존 키 해제는 PIN 입력으로 처리하지 않음", Application.OpenForms.Cast<Form>().OfType<Curtain>().All(c => c.View == CurtainView.Clock));
+                        keybd_event(0x87, 0, 0, marker);
+                        keybd_event(0x87, 0, 2, marker);
+                        stage = 3;
+                    }
+                    else if (stage == 3)
+                    {
+                        Record("잠금 후 새 현장 키 입력은 Windows로 전달 차단", GetAsyncKeyState(0x87) >= 0);
+                        Record("차단한 현장 키를 PIN 화면에 전달", Application.OpenForms.Cast<Form>().OfType<Curtain>().Any(c => c.View == CurtainView.Pin));
+                        keybd_event(0xA2, 0, 0, UIntPtr.Zero);
+                        stage = 4;
+                    }
+                    else if (stage == 4)
+                    {
+                        Record("잠금 중 주입 입력 전달", GetAsyncKeyState(0xA2) < 0);
+                        keybd_event(0xA2, 0, 2, UIntPtr.Zero);
+                        stage = 5;
+                    }
+                    else
+                    {
+                        Native.UnhookWindowsHookEx(bridgeHandle);
+                        bridgeHandle = IntPtr.Zero;
+                        app.Uncover();
+                        Record("잠금 해제 후 Alt Ctrl Shift 눌림 상태 없음", heldKeys.All(key => GetAsyncKeyState(key) >= 0));
+                        timer.Stop();
+                        app.ExitThread();
+                    }
+                };
+                try
+                {
+                    fixture.Show();
+                    fixture.Activate();
+                    timer.Start();
+                    Application.Run(app);
+                }
+                finally
+                {
+                    timer.Stop();
+                    if (bridgeHandle != IntPtr.Zero) Native.UnhookWindowsHookEx(bridgeHandle);
+                    foreach (byte key in heldKeys.Reverse()) keybd_event(key, 0, (key == 0xA3 || key == 0xA5 ? 1u : 0u) | 2u, UIntPtr.Zero);
+                    app.Uncover();
+                    GC.KeepAlive(bridge);
+                }
             }
         }
 

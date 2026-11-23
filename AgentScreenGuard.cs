@@ -262,6 +262,8 @@ namespace AgentScreenGuard
         readonly ManualResetEvent ready = new ManualResetEvent(false);
         readonly IntPtr target;
         readonly HashSet<int> pressed = new HashSet<int>();
+        readonly HashSet<int> keysHeldBeforeCover = new HashSet<int>();
+        readonly HashSet<int> mouseButtonsHeldBeforeCover = new HashSet<int>();
         Native.HookProc keyboardProc, mouseProc;
         IntPtr keyboard, mouse;
         uint threadId;
@@ -289,6 +291,15 @@ namespace AgentScreenGuard
                 keyboard = Native.SetWindowsHookEx(13, keyboardProc, module, 0);
                 mouse = Native.SetWindowsHookEx(14, mouseProc, module, 0);
                 if (keyboard == IntPtr.Zero || mouse == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "현장 입력 차단을 시작하지 못했습니다.");
+                // Balance input already delivered to Windows before installing the hooks.
+                // This snapshot never delays or cancels covering the screen.
+                for (int key = 1; key < 255; key++)
+                {
+                    if (Native.GetAsyncKeyState(key) >= 0) continue;
+                    if (key == 1 || key == 2 || key == 4 || key == 5 || key == 6)
+                        mouseButtonsHeldBeforeCover.Add(key);
+                    else keysHeldBeforeCover.Add(key);
+                }
                 ready.Set();
                 while (Native.GetMessage(out message, IntPtr.Zero, 0, 0) > 0)
                 { Native.TranslateMessage(ref message); Native.DispatchMessage(ref message); }
@@ -307,6 +318,15 @@ namespace AgentScreenGuard
             if (code < 0 || (Marshal.ReadInt32(lParam, 8) & 0x10) != 0) return Native.CallNextHookEx(keyboard, code, wParam, lParam);
             int key = Marshal.ReadInt32(lParam);
             int message = wParam.ToInt32();
+            if (keysHeldBeforeCover.Contains(key))
+            {
+                if (message == 0x0101 || message == 0x0105)
+                {
+                    keysHeldBeforeCover.Remove(key);
+                    return Native.CallNextHookEx(keyboard, code, wParam, lParam);
+                }
+                return new IntPtr(1);
+            }
             if (message == 0x0100 || message == 0x0104)
             {
                 if (pressed.Add(key) && key != 13) Native.PostMessage(target, 0x8001, new IntPtr(key), IntPtr.Zero);
@@ -319,6 +339,16 @@ namespace AgentScreenGuard
         {
             if (code < 0 || (Marshal.ReadInt32(lParam, 12) & 1) != 0) return Native.CallNextHookEx(mouse, code, wParam, lParam);
             if (wParam.ToInt32() == 0x0200) return Native.CallNextHookEx(mouse, code, wParam, lParam);
+            int releasedButton = 0;
+            switch (wParam.ToInt32())
+            {
+                case 0x0202: releasedButton = 1; break;
+                case 0x0205: releasedButton = 2; break;
+                case 0x0208: releasedButton = 4; break;
+                case 0x020C: releasedButton = (Marshal.ReadInt32(lParam, 8) >> 16) == 1 ? 5 : 6; break;
+            }
+            if (mouseButtonsHeldBeforeCover.Remove(releasedButton))
+                return Native.CallNextHookEx(mouse, code, wParam, lParam);
             if (wParam.ToInt32() == 0x0202)
                 Native.PostMessage(target, 0x8003, new IntPtr(Marshal.ReadInt32(lParam)), new IntPtr(Marshal.ReadInt32(lParam, 4)));
             return new IntPtr(1);
@@ -700,6 +730,7 @@ namespace AgentScreenGuard
         [DllImport("user32.dll")] internal static extern bool RegisterHotKey(IntPtr hwnd, int id, uint modifiers, uint key);
         [DllImport("user32.dll")] internal static extern bool UnregisterHotKey(IntPtr hwnd, int id);
         [DllImport("user32.dll")] internal static extern bool LockWorkStation();
+        [DllImport("user32.dll")] internal static extern short GetAsyncKeyState(int key);
         [DllImport("kernel32.dll")] internal static extern uint SetThreadExecutionState(uint flags);
     }
 
